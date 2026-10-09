@@ -31,6 +31,22 @@ public class ConsultationSession {
     @TableField("started_at")
     private LocalDateTime startedAt;
 
+    // 消息总数（冗余字段，新增消息时同步更新）
+    @TableField("message_count")
+    private Integer messageCount;
+
+    // 最后一条消息内容（冗余字段）
+    @TableField("last_message_content")
+    private String lastMessageContent;
+
+    // 最后一条消息时间（冗余字段）
+    @TableField("last_message_time")
+    private LocalDateTime lastMessageTime;
+
+    // 软删除标记 0-正常 1-已删除
+    @TableField("deleted")
+    private Integer deleted;
+
     // 最后一次情绪分析结果(JSON格式)
     @TableField("last_emotion_analysis")
     private String lastEmotionAnalysis;

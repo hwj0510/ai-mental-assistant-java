@@ -1,4 +1,4 @@
-package com.heima.aimentalassistant.controller;
+package com.heima.aimentalassistant.controller.user;
 
 import cn.hutool.json.JSONUtil;
 import com.auth0.jwt.interfaces.DecodedJWT;
@@ -8,7 +8,14 @@ import com.heima.aimentalassistant.common.utils.JWTUtils;
 import com.heima.aimentalassistant.pojo.dto.AIChatDTO;
 import com.heima.aimentalassistant.pojo.dto.AIChatStreamDTO;
 import com.heima.aimentalassistant.pojo.vo.AIChatVO;
+import com.heima.aimentalassistant.pojo.vo.PageResultVO;
+import com.heima.aimentalassistant.pojo.vo.SessionListVO;
+import com.heima.aimentalassistant.pojo.vo.SessionMessageSimpleVO;
 import com.heima.aimentalassistant.service.AIChatService;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestParam;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,7 +27,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 
+import com.heima.aimentalassistant.common.enums.UserType;
+
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 
 @Slf4j
@@ -78,5 +88,63 @@ public class AIChatController {
                         .data("{}")
                         .build()))
                 .delayElements(Duration.ofMillis(50));
+    }
+
+    @GetMapping("/sessions")
+    public Result<PageResultVO<SessionListVO>> listSessions(
+            @RequestParam(required = false) Integer currentPage,
+            @RequestParam(required = false) Integer size) {
+        log.info("========== 请求进入 GET /api/psychological-chat/sessions ==========");
+
+        String token = JWTUtils.getCurrentToken();
+        DecodedJWT decodedJWT = JWTUtils.validateToken(token);
+        Long userId = decodedJWT.getClaim("userId").asLong();
+        Integer roleType = decodedJWT.getClaim("roleType").asInt();
+
+        log.info("[会话列表] userId: {}, roleType: {}, currentPage: {}, size: {}", userId, roleType, currentPage, size);
+
+        // 管理员 → 返回所有会话；普通用户 → 只返回自己的
+        if (UserType.ADMIN.getCode().equals(roleType)) {
+            return Result.success(aiChatService.adminListSessions(currentPage, size));
+        }
+        return Result.success(aiChatService.listSessions(userId, currentPage, size));
+    }
+
+    @DeleteMapping("/sessions/{sessionId}")
+    public Result<Void> deleteSession(@PathVariable Long sessionId) {
+        log.info("========== 请求进入 DELETE /api/psychological-chat/sessions/{} ==========", sessionId);
+
+        String token = JWTUtils.getCurrentToken();
+        DecodedJWT decodedJWT = JWTUtils.validateToken(token);
+        Long userId = decodedJWT.getClaim("userId").asLong();
+        Integer roleType = decodedJWT.getClaim("roleType").asInt();
+
+        log.info("[删除会话] userId: {}, roleType: {}, sessionId: {}", userId, roleType, sessionId);
+
+        // 管理员 → 硬删；普通用户 → 软删
+        if (UserType.ADMIN.getCode().equals(roleType)) {
+            aiChatService.adminDeleteSession(sessionId);
+        } else {
+            aiChatService.deleteSession(userId, sessionId);
+        }
+        return Result.success(null);
+    }
+
+    @GetMapping("/sessions/{sessionId}/messages")
+    public Result<List<SessionMessageSimpleVO>> listSessionMessages(@PathVariable Long sessionId) {
+        log.info("========== 请求进入 GET /api/psychological-chat/sessions/{}/messages ==========", sessionId);
+
+        String token = JWTUtils.getCurrentToken();
+        DecodedJWT decodedJWT = JWTUtils.validateToken(token);
+        Long userId = decodedJWT.getClaim("userId").asLong();
+        Integer roleType = decodedJWT.getClaim("roleType").asInt();
+
+        log.info("[会话消息详情] userId: {}, roleType: {}, sessionId: {}", userId, roleType, sessionId);
+
+        // 管理员 → 可看任意会话；普通用户 → 只能看自己的
+        if (UserType.ADMIN.getCode().equals(roleType)) {
+            return Result.success(aiChatService.adminListSessionMessages(sessionId));
+        }
+        return Result.success(aiChatService.listSessionMessages(userId, sessionId));
     }
 }

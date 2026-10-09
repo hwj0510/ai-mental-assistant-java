@@ -32,13 +32,19 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         if (StringUtils.hasText(token)) {
             JWTUtils.TokenValidator tokenValidator = JWTUtils.verifyToken(token);
             if (tokenValidator != null && tokenValidator.isValid()) {
-                // ✅ 验证通过：直接用 token 里的信息存认证状态
-                //    不需要查数据库！token 里已经有 username / userId / roleType 了
+                // ✅ 验证通过：构造 Spring Security 认证对象
+                // roleType 1=普通用户 → ROLE_USER，roleType 2=管理员 → ROLE_ADMIN
+                java.util.List<org.springframework.security.core.GrantedAuthority> authorities =
+                        new java.util.ArrayList<>();
+                if (tokenValidator.getRoleType() != null) {
+                    String role = tokenValidator.getRoleType() == 2 ? "ADMIN" : "USER";
+                    authorities.add(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_" + role));
+                }
                 UsernamePasswordAuthenticationToken authentication =
                         new UsernamePasswordAuthenticationToken(
                                 tokenValidator.getUsername(),
                                 null,
-                                Collections.emptyList()
+                                authorities
                         );
                 SecurityContextHolder.getContext().setAuthentication(authentication);
             } else {

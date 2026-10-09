@@ -1,4 +1,4 @@
-package com.heima.aimentalassistant.controller;
+package com.heima.aimentalassistant.controller.user;
 
 import com.auth0.jwt.interfaces.DecodedJWT;
 import com.heima.aimentalassistant.common.results.Result;

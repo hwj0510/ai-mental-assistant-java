@@ -26,6 +26,12 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
+import com.heima.aimentalassistant.common.exception.BusinessException;
+import com.heima.aimentalassistant.pojo.vo.PageResultVO;
+import com.heima.aimentalassistant.pojo.vo.SessionListVO;
+import com.heima.aimentalassistant.pojo.vo.SessionMessageSimpleVO;
+import org.springframework.transaction.annotation.Transactional;
+
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -100,6 +106,8 @@ public class AIChatServiceImpl implements AIChatService {
                 .build();
         //插入记录
         consultationMessageMapper.insert(message);
+        // 同步更新会话冗余字段
+        updateSessionSummary(sessionId);
         return message;
     }
 
@@ -208,7 +216,165 @@ public class AIChatServiceImpl implements AIChatService {
                 .build();
 
         consultationMessageMapper.insert(message);
+        // 同步更新会话冗余字段
+        updateSessionSummary(sessionId);
         return message;
+    }
+
+    @Override
+    public PageResultVO<SessionListVO> listSessions(Long userId, Integer currentPage, Integer size) {
+        int pn = (currentPage == null || currentPage < 1) ? 1 : currentPage;
+        int ps = (size == null || size < 1) ? 10 : size;
+
+        LambdaQueryWrapper<ConsultationSession> sessionWrapper = new LambdaQueryWrapper<>();
+        sessionWrapper.eq(ConsultationSession::getUserId, userId)
+                .eq(ConsultationSession::getDeleted, 0)
+                // 优先按 lastMessageTime 倒序，没有就按 startedAt
+                .orderByDesc(ConsultationSession::getLastMessageTime)
+                .orderByDesc(ConsultationSession::getStartedAt);
+
+        long total = consultationSessionMapper.selectCount(sessionWrapper);
+        sessionWrapper.last("LIMIT " + (pn - 1) * ps + "," + ps);
+        List<ConsultationSession> sessions = consultationSessionMapper.selectList(sessionWrapper);
+
+        List<SessionListVO> records = sessions.stream().map(s -> SessionListVO.builder()
+                .id(s.getId())
+                .userNickname(null) // 用户端不需要昵称，留空
+                .sessionTitle(s.getSessionTitle())
+                .startedAt(s.getStartedAt())
+                .lastMessageContent(s.getLastMessageContent())
+                .messageCount(s.getMessageCount() != null ? s.getMessageCount() : 0)
+                .lastMessageTime(s.getLastMessageTime())
+                .build()).toList();
+
+        return PageResultVO.of(records, total);
+    }
+
+    @Override
+    public PageResultVO<SessionListVO> adminListSessions(Integer currentPage, Integer size) {
+        int pn = (currentPage == null || currentPage < 1) ? 1 : currentPage;
+        int ps = (size == null || size < 1) ? 10 : size;
+
+        // 管理员查看所有会话（包括软删除的）
+        LambdaQueryWrapper<ConsultationSession> sessionWrapper = new LambdaQueryWrapper<>();
+        sessionWrapper.orderByDesc(ConsultationSession::getLastMessageTime)
+                .orderByDesc(ConsultationSession::getStartedAt);
+
+        long total = consultationSessionMapper.selectCount(sessionWrapper);
+        sessionWrapper.last("LIMIT " + (pn - 1) * ps + "," + ps);
+        List<ConsultationSession> sessions = consultationSessionMapper.selectList(sessionWrapper);
+
+        // 关联查用户昵称
+        List<SessionListVO> records = new ArrayList<>();
+        for (ConsultationSession s : sessions) {
+            String displayName = null;
+            if (s.getUserId() != null) {
+                User u = userMapper.selectById(s.getUserId());
+                if (u != null) {
+                    // 优先 nickname，没有 fallback 到 username
+                    displayName = u.getDisplayName();
+                }
+            }
+            records.add(SessionListVO.builder()
+                    .id(s.getId())
+                    .userNickname(displayName)
+                    .sessionTitle(s.getSessionTitle())
+                    .startedAt(s.getStartedAt())
+                    .lastMessageContent(s.getLastMessageContent())
+                    .messageCount(s.getMessageCount() != null ? s.getMessageCount() : 0)
+                    .lastMessageTime(s.getLastMessageTime())
+                    .build());
+        }
+        return PageResultVO.of(records, total);
+    }
+
+    @Transactional
+    public void deleteSession(Long userId, Long sessionId) {
+        ConsultationSession session = consultationSessionMapper.selectById(sessionId);
+        if (session == null) {
+            throw new BusinessException("会话不存在");
+        }
+        if (!session.getUserId().equals(userId)) {
+            throw new BusinessException("无权删除该会话");
+        }
+
+        // 软删除（管理端仍可见）
+        ConsultationSession update = ConsultationSession.builder()
+                .id(sessionId)
+                .deleted(1)
+                .build();
+        consultationSessionMapper.updateById(update);
+    }
+
+    @Override
+    @Transactional
+    public void adminDeleteSession(Long sessionId) {
+        ConsultationSession session = consultationSessionMapper.selectById(sessionId);
+        if (session == null) {
+            throw new BusinessException("会话不存在");
+        }
+        // 先删关联消息，再删会话（硬删除）
+        consultationMessageMapper.delete(
+                new LambdaQueryWrapper<ConsultationMessage>()
+                        .eq(ConsultationMessage::getSessionId, sessionId));
+        consultationSessionMapper.deleteById(sessionId);
+    }
+
+    @Override
+    public List<SessionMessageSimpleVO> listSessionMessages(Long userId, Long sessionId) {
+        ConsultationSession session = consultationSessionMapper.selectById(sessionId);
+        if (session == null || session.getDeleted() != null && session.getDeleted() == 1) {
+            throw new BusinessException("会话不存在");
+        }
+        if (!session.getUserId().equals(userId)) {
+            throw new BusinessException("无权查看该会话");
+        }
+        return queryMessagesBySessionId(sessionId);
+    }
+
+    @Override
+    public List<SessionMessageSimpleVO> adminListSessionMessages(Long sessionId) {
+        ConsultationSession session = consultationSessionMapper.selectById(sessionId);
+        if (session == null) {
+            throw new BusinessException("会话不存在");
+        }
+        return queryMessagesBySessionId(sessionId);
+    }
+
+    /** 公共：按 sessionId 查消息，按 createdAt 升序 */
+    private List<SessionMessageSimpleVO> queryMessagesBySessionId(Long sessionId) {
+        List<ConsultationMessage> messages = consultationMessageMapper.selectList(
+                new LambdaQueryWrapper<ConsultationMessage>()
+                        .eq(ConsultationMessage::getSessionId, sessionId)
+                        .orderByAsc(ConsultationMessage::getCreatedAt));
+        return messages.stream().map(msg -> SessionMessageSimpleVO.builder()
+                .id(msg.getId())
+                .senderType(msg.getSenderType())
+                .content(msg.getContent())
+                .createdAt(msg.getCreatedAt())
+                .build()).toList();
+    }
+
+    @Override
+    public void updateSessionSummary(Long sessionId) {
+        // 消息总数
+        long count = consultationMessageMapper.selectCount(
+                new LambdaQueryWrapper<ConsultationMessage>()
+                        .eq(ConsultationMessage::getSessionId, sessionId));
+        // 最后一条消息
+        ConsultationMessage last = consultationMessageMapper.selectOne(
+                new LambdaQueryWrapper<ConsultationMessage>()
+                        .eq(ConsultationMessage::getSessionId, sessionId)
+                        .orderByDesc(ConsultationMessage::getCreatedAt)
+                        .last("limit 1"));
+
+        ConsultationSession update = ConsultationSession.builder()
+                .id(sessionId)
+                .messageCount((int) count)
+                .lastMessageContent(last != null ? last.getContent() : null)
+                .lastMessageTime(last != null ? last.getCreatedAt() : null)
+                .build();
+        consultationSessionMapper.updateById(update);
     }
 
 }
